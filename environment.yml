@@ -1,0 +1,20 @@
+name: cs4662-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pandas
+  - scikit-learn
+  - xgboost
+  - lightgbm
+  - spacy
+  - shap
+  - mlflow
+  - matplotlib
+  - seaborn
+  - notebook
+  - conda-lock
+  - pip:
+      - feature-engine
+      - dagshub
