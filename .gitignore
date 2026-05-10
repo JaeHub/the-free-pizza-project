@@ -3,6 +3,7 @@
 cs4662-env/
 .conda/
 envs/
+__pycache__
 
 CLAUDE.md
 

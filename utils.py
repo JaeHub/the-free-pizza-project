@@ -17,13 +17,18 @@ from typing import List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from sklearn.metrics import (
-    auc,
+    classification_report,
     confusion_matrix,
+    f1_score,
     roc_auc_score,
     roc_curve,
 )
 from sklearn.model_selection import StratifiedKFold, train_test_split
+
+CLASS_LABELS = ["Not fulfilled", "Fulfilled"]
+LR_BASELINE_AUC = 0.6452
 
 RANDOM_STATE = 42
 random.seed(RANDOM_STATE)
@@ -170,37 +175,176 @@ def evaluate_cv(y_train: np.ndarray, oof_probs: np.ndarray, model_name: str) -> 
     return {"mean": mean, "std": std, "fold_aucs": fold_aucs, "overall_oof": overall}
 
 
-def evaluate_test(y_test: np.ndarray, test_probs: np.ndarray, model_name: str) -> float:
-    """Print test AUC, plot ROC curve and confusion matrix at the 0.5 threshold."""
+def describe_target(y: np.ndarray, df: pd.DataFrame | None = None) -> None:
+    """Print target value counts and class imbalance ratio in CNN-notebook format."""
+    if df is not None and TARGET_COLUMN in df.columns:
+        print(df[TARGET_COLUMN].value_counts())
+        ratio = df[TARGET_COLUMN].value_counts(normalize=True).round(3).to_dict()
+    else:
+        s = pd.Series(y).map({1: True, 0: False}).rename(TARGET_COLUMN)
+        print(s.value_counts())
+        ratio = s.value_counts(normalize=True).round(3).to_dict()
+    print(f"\nClass imbalance ratio: {ratio}")
+
+
+def evaluate_test(
+    y_test: np.ndarray, test_probs: np.ndarray, model_name: str, threshold: float = 0.5
+) -> dict:
+    """Print test AUC, classification report, confusion-matrix heatmap, and ROC curve.
+
+    Returns a dict of summary metrics so the notebook's final summary cell can
+    reuse them without recomputing.
+    """
+    y_pred = (test_probs >= threshold).astype(int)
     test_auc = roc_auc_score(y_test, test_probs)
-    print(f"[{model_name}] Test AUC: {test_auc:.4f}")
+    f1_fulfilled = f1_score(y_test, y_pred)
+    accuracy = float((y_pred == y_test).mean())
 
-    fpr, tpr, _ = roc_curve(y_test, test_probs)
-    y_pred = (test_probs >= 0.5).astype(int)
+    print(f"Test ROC-AUC: {test_auc:.4f}\n")
+    print(classification_report(y_test, y_pred, target_names=CLASS_LABELS))
+
     cm = confusion_matrix(y_test, y_pred)
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    axes[0].plot(fpr, tpr, label=f"AUC = {auc(fpr, tpr):.4f}")
-    axes[0].plot([0, 1], [0, 1], "--", color="gray", linewidth=0.8)
-    axes[0].set_xlabel("False positive rate")
-    axes[0].set_ylabel("True positive rate")
-    axes[0].set_title(f"{model_name}: ROC curve")
-    axes[0].legend(loc="lower right")
-    axes[0].grid(alpha=0.3)
-
-    im = axes[1].imshow(cm, cmap="Blues")
-    axes[1].set_title(f"{model_name}: confusion matrix @ 0.5")
-    axes[1].set_xlabel("Predicted")
-    axes[1].set_ylabel("Actual")
-    axes[1].set_xticks([0, 1])
-    axes[1].set_yticks([0, 1])
-    for (i, j), v in np.ndenumerate(cm):
-        axes[1].text(j, i, str(v), ha="center", va="center",
-                     color="white" if v > cm.max() / 2 else "black")
-    fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+    plt.figure(figsize=(5, 4))
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues",
+        xticklabels=CLASS_LABELS, yticklabels=CLASS_LABELS,
+    )
+    plt.title(f"Confusion Matrix — {model_name}")
+    plt.ylabel("Actual")
+    plt.xlabel("Predicted")
     plt.tight_layout()
     plt.show()
-    return test_auc
+
+    fpr, tpr, _ = roc_curve(y_test, test_probs)
+    plt.figure(figsize=(5, 4))
+    plt.plot(fpr, tpr, label=f"AUC = {test_auc:.4f}")
+    plt.plot([0, 1], [0, 1], "--", color="gray", linewidth=0.8)
+    plt.xlabel("False positive rate")
+    plt.ylabel("True positive rate")
+    plt.title(f"ROC Curve — {model_name}")
+    plt.legend(loc="lower right")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    return {"test_auc": test_auc, "f1_fulfilled": f1_fulfilled, "accuracy": accuracy}
+
+
+def plot_cv_fold_aucs(fold_aucs, mean: float, model_name: str) -> None:
+    """Bar chart of per-fold validation AUC with a dashed line at the mean."""
+    fold_aucs = list(fold_aucs)
+    plt.figure(figsize=(6, 4))
+    plt.bar(range(1, len(fold_aucs) + 1), fold_aucs, color="steelblue")
+    plt.axhline(mean, linestyle="--", color="black", linewidth=1, label=f"mean = {mean:.4f}")
+    plt.ylim(min(fold_aucs) - 0.02, max(fold_aucs) + 0.02)
+    plt.xticks(range(1, len(fold_aucs) + 1))
+    plt.xlabel("Fold")
+    plt.ylabel("Validation AUC")
+    plt.title(f"Per-fold CV AUC — {model_name}")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_cv_learning_curves(
+    evals_results_per_fold, model_name: str, metric_key: str = "auc"
+) -> None:
+    """Plot per-fold val-AUC vs n_trees curves on a single axis.
+
+    Accepts each element as either an XGBoost-style dict (``{"validation_0": {"auc": [...]}}``)
+    or a LightGBM-style dict (``{"valid_0": {"auc": [...]}}``); the first inner
+    key is used automatically.
+    """
+    plt.figure(figsize=(15, 4))
+    for i, evals in enumerate(evals_results_per_fold):
+        outer_key = next(iter(evals))
+        curve = evals[outer_key][metric_key]
+        plt.plot(curve, label=f"fold {i}")
+    plt.xlabel("Trees")
+    plt.ylabel(f"Validation {metric_key.upper()}")
+    plt.title(f"CV learning curves — {model_name}")
+    plt.legend(loc="lower right")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
+def inspect_predictions(
+    text_series,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_prob: np.ndarray,
+    model_name: str,
+    n: int = 3,
+) -> None:
+    """Show top-N high-confidence correct and confident-wrong predictions as DataFrames.
+
+    Mirrors CNN Cell 21 layout. ``text_series`` is whatever readable text identifies
+    each test sample (e.g. ``df.iloc[test_idx]["request_title"]``).
+    """
+    try:
+        from IPython.display import display
+    except ImportError:
+        display = print
+
+    text = pd.Series(text_series).reset_index(drop=True)
+    confidence = np.where(y_pred == 1, y_prob, 1 - y_prob)
+    df = pd.DataFrame({
+        "text": text,
+        "actual": y_true,
+        "predicted": y_pred,
+        "confidence": confidence,
+    })
+    correct = df[df["actual"] == df["predicted"]]
+    wrong = df[df["actual"] != df["predicted"]]
+
+    print(f"=== {model_name}: Correct high-confidence predictions ===")
+    display(correct.sort_values("confidence", ascending=False).head(n)[["text", "actual", "confidence"]])
+    print(f"\n=== {model_name}: Confident wrong predictions ===")
+    display(wrong.sort_values("confidence", ascending=False).head(n)[["text", "actual", "predicted", "confidence"]])
+
+
+def print_summary(
+    model_name: str,
+    dataset: dict,
+    model: dict,
+    training: dict,
+    test: dict,
+    takeaways: list,
+) -> None:
+    """Emoji-decorated summary block matching cnn_model.ipynb Cell 24's layout."""
+    bar = "=" * 55
+    print(bar)
+    print(f"       {model_name.upper()} — KEY FINDINGS SUMMARY")
+    print(bar)
+
+    print(f"\n📦 Dataset")
+    print(f"   Total samples      : {dataset['total_samples']:,}")
+    print(f"   Fulfillment rate   : {dataset['fulfillment_rate_pct']:.1f}%  (class imbalance 75/25)")
+    print(f"   Features used      : {dataset['n_features']}  (leakage-safe)")
+
+    print(f"\n🧠 Model — {model['name']}")
+    print(f"   Hyperparameters    : {model['params_summary']}")
+    print(f"   Class handling     : {model['class_handling']}")
+
+    print(f"\n📈 Cross-validation")
+    print(f"   CV AUC             : {training['cv_auc_mean']:.4f} ± {training['cv_auc_std']:.4f}")
+    print(f"   Per-fold AUCs      : {[round(a, 4) for a in training['fold_aucs']]}")
+    print(f"   Median best_iter   : {training['median_best_iter']}")
+    print(f"   Refit train AUC    : {training['refit_train_auc']:.4f}  "
+          f"(gap vs CV = {training['refit_train_auc'] - training['cv_auc_mean']:+.4f})")
+
+    print(f"\n🎯 Test Performance")
+    baseline = test.get("lr_baseline", LR_BASELINE_AUC)
+    delta = test["roc_auc"] - baseline
+    print(f"   ROC-AUC            : {test['roc_auc']:.4f}  (LR baseline = {baseline:.4f}, Δ = {delta:+.4f})")
+    print(f"   F1 (fulfilled)     : {test['f1_fulfilled']:.4f}")
+    print(f"   Accuracy           : {test['accuracy_pct']:.1f}%")
+
+    print(f"\n💡 Key Takeaways")
+    for line in takeaways:
+        print(f"   • {line}")
+    print(bar)
 
 
 def plot_feature_importance(
