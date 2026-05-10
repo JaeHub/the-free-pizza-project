@@ -330,7 +330,8 @@ def print_summary(
     print(f"\n📈 Cross-validation")
     print(f"   CV AUC             : {training['cv_auc_mean']:.4f} ± {training['cv_auc_std']:.4f}")
     print(f"   Per-fold AUCs      : {[round(a, 4) for a in training['fold_aucs']]}")
-    print(f"   Median best_iter   : {training['median_best_iter']}")
+    if "median_best_iter" in training:
+        print(f"   Median best_iter   : {training['median_best_iter']}")
     print(f"   Refit train AUC    : {training['refit_train_auc']:.4f}  "
           f"(gap vs CV = {training['refit_train_auc'] - training['cv_auc_mean']:+.4f})")
 
