@@ -3,3 +3,10 @@
 cs4662-env/
 .conda/
 envs/
+
+CLAUDE.md
+
+# Model artifacts (regeneratable; keep splits/ tracked for reproducibility)
+predictions/
+results.csv
+.ipynb_checkpoints/
